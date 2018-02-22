@@ -116,33 +116,69 @@ def create_new_game(message):
     command_regex = r'!newgame[ ]+(?P<game_length>[\d]+)[ ]+(?P<game_length_mode>[a-zA-Z]+)'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
-    if (match and match.group("game_length") and match.group("game_length_mode") in game_length_modes):
+    if (match and match.group("game_length") and match.group("game_length_mode")
+        and match.group("game_length_mode").upper()in game_length_modes):
+        db_connection = DbConnection()
         game_length = int(match.group("game_length"))
         game_length_mode = match.group("game_length_mode").upper()
-        start_datetime = datetime.today()
+        begin_datetime = datetime.today()
         if "DAY" in game_length_mode:
-            end_datetime = start_datetime + relativedelta(days=+game_length)
+            end_datetime = begin_datetime + relativedelta(days=+game_length)
         else:
-            end_datetime = start_datetime + relativedelta(months=+game_length)
+            end_datetime = begin_datetime + relativedelta(months=+game_length)
 
-        reddit.subreddit(CRYPTO_GAME_SUBREDDIT).submit("Crypto Trading Game: {start_datetime} - {end_datetime}".format(
-            start_datetime = start_datetime,
-            end_datetime = end_datetime
+        submission = reddit.subreddit(CRYPTO_GAME_SUBREDDIT).submit("Crypto Trading Game: {start_datetime} - {end_datetime}".format(
+            start_datetime = begin_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            end_datetime = end_datetime.strftime("%Y-%m-%d %H:%M:%S")
         ),
         "Welcome to The Crypto Day Trading Game! "
-        "The object of the game is to have the highest value portfolio before the game's end time {end_datetime}.\n\n"
-        "The below commands are available to initiate trades and check on your portfolio. "
-        "All price data is gathered from the CryptoCompare API using Bincance as the exchange.\n\n"
+        "The object of the game is to have the highest value portfolio before the game's end time "
+        "[{end_datetime} UTC](http://www.wolframalpha.com/input/?i={end_datetime} UTC To Local Time). "
+        "Everyone starts the game with $10,000 USD to trade as they wish. Current prices and standings will be updated here.\n\n"
+        "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG)."
+        "The below commands are available to initiate trades and check on your portfolio.\n\n"
         "**Commands**\n\n{supported_commands}".format(
-            end_datetime = end_datetime,
+            end_datetime = end_datetime.strftime("%Y-%m-%d %H:%M:%S"),
             supported_commands = SUPPORTED_COMMANDS
         ))
+
+        cmd = "INSERT INTO game_submission (subreddit, submission_id, author, game_begin_datetime, game_end_datetime) VALUES (%s, %s, %s, %s, %s)"
+        db_connection.cursor.execute(cmd, (submission.subreddit.display_name,
+                                           submission.id,
+                                           submission.author.name,
+                                           str(begin_datetime),
+                                           str(end_datetime)))
+        db_connection.connection.commit()
+        db_connection.connection.close()
+
+        return True
     else:
         message.reply("Could not parse new game command. The correct syntax is:\n\n"
                       "!NewGame {game_length_integer} {day | days | month | months}")
         return False
+def get_current_games():
+    current_datetime = datetime.today()
+    db_connection = DbConnection()
+    query = "SELECT submission_id FROM game_submission WHERE game_begin_datetime <= %s AND game_end_datetime >= %s ORDER BY game_begin_datetime"
+    db_connection.cursor.execute(query,[current_datetime,current_datetime])
+    current_games = db_connection.cursor.fetchall()
+    db_connection.connection.close()
 
+    return current_games
 
+def process_game_messages():
+    try:
+        current_games = get_current_games()
+        for current_game in current_games:
+            current_game_id = current_game[0]
+            unprocessed_comments = get_unprocessed_comments(current_game_id)
+            for unprocessed_comment in unprocessed_comments:
+                message_request = MessageRequest(unprocessed_comment)
+                message_request.process()
+    except Exception as err:
+        logger.error(traceback.format_exc())
+        logger.error(err)
+        logger.error("Unknown Exception in process_game_messages")
 
 def process_pms():
     try:
@@ -185,6 +221,7 @@ def main():
         logger.info("Start Main Loop")
         try:
             process_pms()
+            process_game_messages()
 
             logger.info("End Main Loop")
         except Exception as err:

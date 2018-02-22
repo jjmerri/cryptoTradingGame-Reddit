@@ -1,18 +1,15 @@
-DROP SCHEMA IF EXISTS crypto_remind_me;
-CREATE SCHEMA crypto_remind_me;
-USE crypto_remind_me;
+DROP SCHEMA IF EXISTS crypto_trading_game;
+CREATE SCHEMA crypto_trading_game;
+USE crypto_trading_game;
 
-CREATE TABLE `reminder` (
+CREATE TABLE `game_submission` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `object_name` varchar(400) NOT NULL,
-  `message` varchar(11000) DEFAULT NULL,
-  `new_price` DECIMAL(18,9),
-  `origin_price` DECIMAL(18,9),
-  `userID` varchar(50),
-  `create_date` DATETIME DEFAULT CURRENT_TIMESTAMP,
-  `update_date` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  `permalink` varchar(400) NOT NULL,
-  `ticker` varchar(50) NOT NULL,
-  `comment_create_datetime` DATETIME DEFAULT NULL,
+  `subreddit` varchar(400) NOT NULL,
+  `submission_id` varchar(10) NOT NULL,
+  `author` varchar(50) NOT NULL,
+  `game_begin_datetime` DATETIME NOT NULL,
+  `game_end_datetime` DATETIME NOT NULL,
+  `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+);
