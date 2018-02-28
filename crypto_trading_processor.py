@@ -74,6 +74,7 @@ class CommandType(Enum):
     MARKET_ORDER = 2
     LIMIT_ORDER = 3
     UNKNOWN = 4
+    PORTFOLIO = 5
 
 class DbConnection(object):
     """
@@ -94,30 +95,41 @@ class MessageRequest(object):
         self.message = message # Reddit message to process
 
     def process(self):
-        if self.message.author is None: #could be deleted comment
-            add_to_processed(self.message.parent().id, self.message.id, self.message.body)
-            return
+        try:
+            if self.message.author is None: #could be deleted comment
+                add_to_processed(self.message.parent().id, self.message.id, self.message.body)
+                return
 
-        processed = False;
-        command = self._get_command()
+            processed = False
+            command = self._get_command()
 
-        if command == CommandType.NEW_GAME and self.message.author.name == DEV_USER_NAME:
-            create_new_game(self.message)
-        elif command == CommandType.MARKET_ORDER:
-            initialize_portfolio(self.message.parent().id, self.message.author.name)
-            processed = process_market_order(self.message)
-        elif command == CommandType.LIMIT_ORDER:
-            initialize_portfolio(self.message.parent().id, self.message.author.name)
-            processed = process_limit_order(self.message)
-        else: #Unknown command
-            self.message.reply("I could not process your message because there were no valid commands found.")
+            if command == CommandType.NEW_GAME and self.message.author.name == DEV_USER_NAME:
+                create_new_game(self.message)
+            elif command == CommandType.MARKET_ORDER:
+                initialize_portfolio(self.message.parent().id, self.message.author.name)
+                processed = process_market_order(self.message)
+            elif command == CommandType.LIMIT_ORDER:
+                initialize_portfolio(self.message.parent().id, self.message.author.name)
+                processed = process_limit_order(self.message)
+            elif command == CommandType.PORTFOLIO:
+                initialize_portfolio(self.message.parent().id, self.message.author.name)
+                portfolio_summary = get_portfolio_summary(self.message.parent().id, self.message.author.name)
+                self.message.reply("Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                            portfolio_summary = portfolio_summary
+                            ))
+                processed = True
+            else: #Unknown command
+                self.message.reply("I could not process your message because there were no valid commands found.")
 
-        if processed:
-            add_to_processed(self.message.parent().id, self.message.id, self.message.body)
-        else:
+            if processed:
+                add_to_processed(self.message.parent().id, self.message.id, self.message.body)
+            else:
+                send_dev_pm("Crypto Trading Game: Could Not Process Message",
+                            "Could not process message: {message}".format(message = str(self.message)))
+        except Exception as err:
+            logger.exception("Error in process for {message}".format(message = str(self.message)))
             send_dev_pm("Crypto Trading Game: Could Not Process Message",
-                        "Could not process message: {message}".format(message = str(self.message)))
-
+                        "Unknown exception occured while processing message: {message}".format(message = str(self.message)))
     def _get_command(self):
         message_lower = self.message.body.lower()
         if "!newgame" in message_lower:
@@ -126,6 +138,8 @@ class MessageRequest(object):
             return CommandType.MARKET_ORDER
         elif "!limit" in message_lower:
             return CommandType.LIMIT_ORDER
+        elif "!portfolio" in message_lower:
+            return CommandType.PORTFOLIO
         else:
             return CommandType.UNKNOWN
 
@@ -251,31 +265,31 @@ def process_market_order(message):
 
         if args_invalid:
             message.reply("Error processesing your request: Quantities must be greater than 0 and percentages cannot exceed 100%")
-            return False
         elif trading_price <= 0:
             message.reply("Error processesing your request: The provided currency pair may be unsupported or the CryptoCompare API could be down. "
                           "If it is not listed [here](https://www.cryptocompare.com/api/data/coinlist/) then it is not supported.\n\n"
                           "Please see the [README](https://github.com/jjmerri/cryptoTradingGame-Reddit) for more info.")
-            return False
-        elif available_funds < trade_cost:
+        elif available_funds < trade_cost or available_funds == 0:
             portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
             message.reply("Error processesing your request: You have insufficient funds to make that trade. "
                           "Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
                             portfolio_summary = portfolio_summary
                             ))
-            return False
         else:
-            execute_trade(quantity_bought, buy_currency, available_funds - trade_cost, sell_currency)
-            message.reply("Trade Executed")
+            execute_trade(message.parent().id, message.id, message.author.name, quantity_bought, buy_currency, available_funds, trade_cost, sell_currency)
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply("Trade Executed! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                            portfolio_summary = portfolio_summary
+                            ))
 
-            return True
+        return True
     else:
         message.reply("Could not parse market order command. The correct syntax is:\n\n"
                       "!Market {quantity_to_buy | percentage_of_sell_currency} {symbol_to_buy} {symbol_to_sell}\n\n"
                       "Examples:\n\n"
                       "To buy 1000 XRP with USD - !Market 1000 XRP USD"
                       "To spend 50% of your available USD on XRP - !Market 50% XRP USD")
-        return False
+        return True
 
 
 def process_limit_order(message):
@@ -287,83 +301,123 @@ def process_limit_order(message):
 
 def get_trading_price(from_symbol, to_symbol, price_time):
     """
-
     :param from_symbol: symbol we want the price of
     :param to_symbol: symbol we want the price in
     :param price_time: point in time to get the price. If elapsed time is < 60 seconds the current price is returned
     :return:
     """
-    api_url = ("https://min-api.cryptocompare.com/data/price?"
-               "fsym={from_symbol}&"
-               "tsyms={to_symbol}&"
-               "extraParams=reddit_trading_game".format(
-        from_symbol = from_symbol,
-        to_symbol = to_symbol
-    ))
-
-    use_history_api = False
-
-    elapsed_time_sec = time.time() - price_time
-    if elapsed_time_sec > 60:
-        use_history_api = True
-
-    if use_history_api:
-        api_url = ("https://min-api.cryptocompare.com/data/histominute?"
+    try:
+        api_url = ("https://min-api.cryptocompare.com/data/price?"
                    "fsym={from_symbol}&"
-                   "tsym={to_symbol}&"
-                   "toTs={price_time}&"
-                   "e=CCCAGG&"
-                   "limit=1&"
+                   "tsyms={to_symbol}&"
                    "extraParams=reddit_trading_game".format(
-            from_symbol=from_symbol,
-            to_symbol=to_symbol,
-            price_time = price_time
+            from_symbol = from_symbol,
+            to_symbol = to_symbol
         ))
 
-    response = {}
-    api_error_count = 0
+        use_history_api = False
 
-    # Loop to retry getting API data. Will break on success or 10 consecutive errors
-    while True:
-        r = requests.get(api_url)
-        response = r.json()
+        elapsed_time_sec = time.time() - price_time
+        if elapsed_time_sec > 60:
+            use_history_api = True
 
-        # If not success then retry up to 10 times after 1 sec wait
-        if ((use_history_api and response.get("Response", "Error") != "Success") or
-            (not use_history_api and to_symbol not in response)):
-            api_error_count += 1
-            logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
-                                                                     error_count=api_error_count))
-            time.sleep(1)
-            if api_error_count >= 10 or (not use_history_api and response.get("Message", "Error") in "There is no data for any of the toSymbols"):
-                send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
-                                                                               error_count=api_error_count))
-                return -1
+        if use_history_api:
+            api_url = ("https://min-api.cryptocompare.com/data/histominute?"
+                       "fsym={from_symbol}&"
+                       "tsym={to_symbol}&"
+                       "toTs={price_time}&"
+                       "e=CCCAGG&"
+                       "limit=1&"
+                       "extraParams=reddit_trading_game".format(
+                from_symbol=from_symbol,
+                to_symbol=to_symbol,
+                price_time = price_time
+            ))
+
+        response = {}
+        api_error_count = 0
+
+        # Loop to retry getting API data. Will break on success or 10 consecutive errors
+        while True:
+            r = requests.get(api_url)
+            response = r.json()
+
+            # If not success then retry up to 10 times after 1 sec wait
+            if ((use_history_api and response.get("Response", "Error") != "Success") or
+                (not use_history_api and to_symbol not in response)):
+                api_error_count += 1
+                logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                         error_count=api_error_count))
+                time.sleep(1)
+                if api_error_count >= 10 or (not use_history_api and response.get("Message", "Error") in "There is no data for any of the toSymbols"):
+                    send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                                   error_count=api_error_count))
+                    return -1
+            else:
+                break
+
+        if use_history_api and "Data" in response and response["Data"]:
+            for minute_data in response["Data"]:
+                if price_time - minute_data["time"] < 60:
+                    return minute_data["close"]
+        elif not use_history_api and to_symbol in response:
+            return response[to_symbol]
         else:
-            break
+            return -2
 
-    if use_history_api and "Data" in response and response["Data"]:
-        for minute_data in response["Data"]:
-            if price_time - minute_data["time"] < 60:
-                return minute_data["close"]
-    elif not use_history_api and to_symbol in response:
-        return response[to_symbol]
-    else:
-        return -2
+        return -3
 
-    return -3
+    except Exception as err:
+        trading_price = -4
+        logger.exception("Unknown Exception getting the trading price")
 
-
-def execute_trade(buy_quantity, buy_currency, sell_quantity, sell_currency):
+def execute_trade(submission_id, comment_id, username, buy_quantity, buy_currency, available_funds, trade_cost, sell_currency):
     """
-    Executes the trade as an atomic function
+    Executes the trade as an atomic function by updating the portfolio and adding the trade to the executed_trade table
+    :param submission_id: id of the game the request is for
+    :param comment_id: id of the comment that contains the request
+    :param username: user that requested the trade
     :param buy_quantity: amount of buy_currency bought
     :param buy_currency: the currency that was bought
-    :param sell_quantity: amount of sell_currency sold
+    :param available_funds: amount of sell_currency available for sale
+    :param trade_cost: amount of sell_currency it cost to buy the amount of buy_currency
     :param sell_currency: the currency that was sold
     :return: success or failure
     """
-    pass
+
+    db_connection = DbConnection()
+    query = "SELECT game_id FROM game_submission WHERE game_submission.submission_id = %s"
+    db_connection.cursor.execute(query, [submission_id])
+    game_id = db_connection.cursor.fetchall()[0]["game_id"]
+
+    #Update sell currency portfolio
+    query = ("UPDATE portfolio "
+             "SET amount = %s "
+             "WHERE game_id = %s AND owner = %s AND currency = %s")
+    db_connection.cursor.execute(query, [(available_funds - trade_cost), game_id, username, sell_currency])
+
+    #Update buy currency portolfio or add it if it doesnt exist
+    query = ("SELECT portfolio_id FROM portfolio "
+             "WHERE game_id = %s AND owner = %s AND currency = %s")
+    db_connection.cursor.execute(query, [game_id, username, buy_currency])
+    portfolio_id_result_set = db_connection.cursor.fetchall()
+
+    if portfolio_id_result_set:
+        portfolio_id = portfolio_id_result_set[0]["portfolio_id"]
+        query = ("UPDATE portfolio "
+                 "SET amount = amount + %s "
+                 "WHERE portfolio_id = %s")
+        db_connection.cursor.execute(query, [buy_quantity, portfolio_id])
+    else:
+        query = "INSERT INTO portfolio (game_id, owner, currency, amount) VALUES (%s, %s, %s, %s)"
+        db_connection.cursor.execute(query, [game_id, username, buy_currency, buy_quantity])
+
+    query = ("INSERT INTO executed_trade (game_id, comment_id, buy_currency, buy_amount, sell_currency, sell_amount) "
+            "VALUES (%s, %s, %s, %s, %s, %s)")
+    db_connection.cursor.execute(query, [game_id, comment_id, buy_currency, buy_quantity, sell_currency, trade_cost])
+
+    db_connection.connection.commit()
+    db_connection.connection.close()
 
 def initialize_portfolio(submission_id, username):
     """
@@ -451,15 +505,18 @@ def get_portfolio_summary(submission_id, username):
 
         currencies = get_currencies(submission_id, username)
         usd_value = get_currencies_usd_value(currencies)
+        total_usd_value = 0
 
         for portfolio_currency in portfolio:
             currency = portfolio_currency["currency"]
-            amount = portfolio_currency["amount"]
+            amount = float(portfolio_currency["amount"])
             if currency in usd_value:
                 currency_value = amount * usd_value[currency]["USD"]
-                body = currency + "|" + str(amount) + "|" + '${:,.2f}'.format(currency_value)
+                total_usd_value += currency_value
+                body += currency + "|" + '{:,.4f}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
+        footer = "**TOTAL**|**-----**|**" + '${:,.2f}'.format(total_usd_value) + "**\n"
 
-        return header + body
+        return header + body + footer
     else:
         logger.error("Something might be wrong with {username}'s portfolio for game {submission_id}. "
                      "They have no portfolio for the given game!".format(username = username,
@@ -471,33 +528,37 @@ def get_currencies_usd_value(currencies):
     :param currencies: the currencies to get the USD value for
     :return: dictionary containing currency USD values
     """
-    api_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms={currencies}&tsyms=USD".format(
-        currencies = ",".join(currencies)
-    )
+    try:
+        api_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms={currencies}&tsyms=USD".format(
+            currencies = ",".join(currencies)
+        )
 
 
-    response = {}
-    api_error_count = 0
+        response = {}
+        api_error_count = 0
 
-    # Loop to retry getting API data. Will break on success or 10 consecutive errors
-    while True:
-        r = requests.get(api_url)
-        response = r.json()
+        # Loop to retry getting API data. Will break on success or 10 consecutive errors
+        while True:
+            r = requests.get(api_url)
+            response = r.json()
 
-        # If not success then retry up to 10 times after 1 sec wait
-        if (currencies[0] not in response):
-            api_error_count += 1
-            logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
-                                                                     error_count=api_error_count))
-            time.sleep(1)
-            if api_error_count >= 10:
-                send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
-                                                                               error_count=api_error_count))
-                return {}
-        else:
-            break
+            # If not success then retry up to 10 times after 1 sec wait
+            if (currencies[0] not in response):
+                api_error_count += 1
+                logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                         error_count=api_error_count))
+                time.sleep(1)
+                if api_error_count >= 10:
+                    send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                                   error_count=api_error_count))
+                    return {}
+            else:
+                break
 
-    return response
+        return response
+    except Exception as err:
+        logger.exception("Error getting usd values")
+        return {}
 
 def get_current_games():
     """

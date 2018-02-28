@@ -42,3 +42,15 @@ CREATE TABLE `processed_comment` (
 CREATE INDEX processed_comment_game_id_index
     ON processed_comment (game_id);
 
+CREATE TABLE `executed_trade` (
+  `executed_trade_id` int(11) NOT NULL AUTO_INCREMENT,
+  `game_id` int(11) NOT NULL,
+  `comment_id` varchar(50) NOT NULL,
+  `buy_currency` varchar(50) NOT NULL,
+  `buy_amount` DECIMAL(18,9) NOT NULL,
+  `sell_currency` varchar(50) NOT NULL,
+  `sell_amount` DECIMAL(18,9) NOT NULL,
+  `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`executed_trade_id`)
+);
