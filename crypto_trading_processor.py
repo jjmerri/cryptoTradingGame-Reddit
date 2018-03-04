@@ -48,18 +48,16 @@ DEV_USER_NAME = config.get("CRYPTOTRADING", "dev_user")
 
 RUNNING_FILE = "crypto_trading_processor.running"
 CRYPTO_GAME_SUBREDDIT = "CryptoDayTradingGame"
-SUPPORTED_COMMANDS = "!Market {{stuff}}"
+SUPPORTED_COMMANDS = ("!Market {buy_amount} {buy_symbol} {sell_symbol}\n\n"
+                      "!Limit {buy_amount} {buy_symbol} {sell_symbol} {limit_price}\n\n"
+                      "!CancelLimit {order_id}\n\n"
+                      "!Portfolio\n\n"
+                      "See the [README](https://github.com/jjmerri/cryptoTradingGame-Reddit) for more info on commands.")
 
 FORMAT = '%(asctime)-15s %(message)s'
 logging.basicConfig(format=FORMAT)
 logger = logging.getLogger('cryptoTradingGameBot')
 logger.setLevel(logging.INFO)
-
-#Dictionary to store current crypto prices
-current_price = {"XRP": 0.0}
-
-supported_tickers = ["ADA","BCH","BCN","BTC","BTG","DASH","DOGE","ETC","ETH","LSK","LTC","NEO","QASH","QTUM","REQ",
-                     "STEEM","XEM","XLM","XMR","XRB","XRP","ZEC"]
 
 # =============================================================================
 # CLASSES
@@ -75,6 +73,7 @@ class CommandType(Enum):
     LIMIT_ORDER = 3
     UNKNOWN = 4
     PORTFOLIO = 5
+    CANCEL_LIMIT_ORDER = 6
 
 class DbConnection(object):
     """
@@ -91,6 +90,8 @@ class DbConnection(object):
 
 
 class MessageRequest(object):
+    _errored_requests = []
+
     def __init__(self, message):
         self.message = message # Reddit message to process
 
@@ -105,12 +106,16 @@ class MessageRequest(object):
 
             if command == CommandType.NEW_GAME and self.message.author.name == DEV_USER_NAME:
                 create_new_game(self.message)
+                processed = True
             elif command == CommandType.MARKET_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
                 processed = process_market_order(self.message)
             elif command == CommandType.LIMIT_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
                 processed = process_limit_order(self.message)
+            elif command == CommandType.CANCEL_LIMIT_ORDER:
+                initialize_portfolio(self.message.parent().id, self.message.author.name)
+                processed = process_cancel_limit_order(self.message)
             elif command == CommandType.PORTFOLIO:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
                 portfolio_summary = get_portfolio_summary(self.message.parent().id, self.message.author.name)
@@ -120,16 +125,25 @@ class MessageRequest(object):
                 processed = True
             else: #Unknown command
                 self.message.reply("I could not process your message because there were no valid commands found.")
+                processed = True
 
             if processed:
-                add_to_processed(self.message.parent().id, self.message.id, self.message.body)
+                if self.message.parent_id is not None:
+                    add_to_processed(self.message.parent().id, self.message.id, self.message.body)
             else:
-                send_dev_pm("Crypto Trading Game: Could Not Process Message",
-                            "Could not process message: {message}".format(message = str(self.message)))
+                #Prevent sending the dev more than 1 PM for the same message
+                if self.message.id not in MessageRequest._errored_requests:
+                    MessageRequest._errored_requests.append(self.message.id)
+                    send_dev_pm("Crypto Trading Game: Could Not Process Message",
+                                "Could not   process message: {message}".format(message = str(self.message)))
         except Exception as err:
-            logger.exception("Error in process for {message}".format(message = str(self.message)))
-            send_dev_pm("Crypto Trading Game: Could Not Process Message",
-                        "Unknown exception occured while processing message: {message}".format(message = str(self.message)))
+            #Prevent sending the dev more than 1 PM for the same message
+            if self.message.id not in MessageRequest._errored_requests:
+                logger.exception("Error in process for {message}".format(message = str(self.message)))
+                send_dev_pm("Crypto Trading Game: Could Not Process Message",
+                            "Unknown exception occured while processing message: {message}".format(message = str(self.message)))
+                MessageRequest._errored_requests.append(self.message.id)
+
     def _get_command(self):
         message_lower = self.message.body.lower()
         if "!newgame" in message_lower:
@@ -138,6 +152,8 @@ class MessageRequest(object):
             return CommandType.MARKET_ORDER
         elif "!limit" in message_lower:
             return CommandType.LIMIT_ORDER
+        elif "!cancellimit" in message_lower:
+            return CommandType.CANCEL_LIMIT_ORDER
         elif "!portfolio" in message_lower:
             return CommandType.PORTFOLIO
         else:
@@ -184,7 +200,7 @@ def create_new_game(message):
         db_connection = DbConnection()
         game_length = int(match.group("game_length"))
         game_length_mode = match.group("game_length_mode").upper()
-        begin_datetime = datetime.today()
+        begin_datetime = datetime.utcnow()
         if "DAY" in game_length_mode:
             end_datetime = begin_datetime + relativedelta(days=+game_length)
         else:
@@ -225,13 +241,12 @@ def process_market_order(message):
     :param message: the message containing the market order command
     :return: True if success False if not
     """
-    command_regex = r'^!market[ ]+\$?(?P<quantity>([\d]+(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)$'
+    command_regex = r'^!market[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)$'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
     if (match and match.group("quantity") and match.group("buy_currency") and match.group("sell_currency")):
         args_invalid = False
         quantity_is_percent = False
-        db_connection = DbConnection()
         quantity_str = match.group("quantity")
         buy_currency = match.group("buy_currency").upper()
         sell_currency = match.group("sell_currency").upper()
@@ -267,7 +282,8 @@ def process_market_order(message):
             message.reply("Error processesing your request: Quantities must be greater than 0 and percentages cannot exceed 100%")
         elif trading_price <= 0:
             message.reply("Error processesing your request: The provided currency pair may be unsupported or the CryptoCompare API could be down. "
-                          "If it is not listed [here](https://www.cryptocompare.com/api/data/coinlist/) then it is not supported.\n\n"
+                          "If it is not listed [here](https://www.cryptocompare.com/api/data/coinlist/) then it is not supported. "
+                          "If it is listed please try again later.\n\n"
                           "Please see the [README](https://github.com/jjmerri/cryptoTradingGame-Reddit) for more info.")
         elif available_funds < trade_cost or available_funds == 0:
             portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
@@ -287,8 +303,10 @@ def process_market_order(message):
         message.reply("Could not parse market order command. The correct syntax is:\n\n"
                       "!Market {quantity_to_buy | percentage_of_sell_currency} {symbol_to_buy} {symbol_to_sell}\n\n"
                       "Examples:\n\n"
-                      "To buy 1000 XRP with USD - !Market 1000 XRP USD"
-                      "To spend 50% of your available USD on XRP - !Market 50% XRP USD")
+                      "To buy 1000 XRP with USD:\n\n"
+                      "!Market 1000 XRP USD\n\n"
+                      "To spend 50% of your available USD on XRP\n\n"
+                      "!Market 50% XRP USD")
         return True
 
 
@@ -297,7 +315,105 @@ def process_limit_order(message):
     :param message: the message containing the limit order command
     :return: True if success False if not
     """
-    pass
+    command_regex = r'^!limit[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)[ ]+(?P<limit_price>(([\d]+)?(\.\d+)?))$'
+    match = re.search(command_regex, message.body, re.IGNORECASE)
+
+    if (match and match.group("quantity") and match.group("buy_currency") and match.group("sell_currency") and match.group("limit_price")):
+        args_invalid = False
+        quantity_is_percent = False
+        quantity_str = match.group("quantity")
+        buy_currency = match.group("buy_currency").upper()
+        sell_currency = match.group("sell_currency").upper()
+        trading_price = float(match.group("limit_price"))
+
+        if "%" in quantity_str:
+            quantity_str = quantity_str.replace("%","")
+            quantity_is_percent = True
+
+        quantity_float = float(quantity_str)
+
+        if (quantity_float <= 0 or (quantity_float > 100 and quantity_is_percent)):
+            args_invalid = True
+
+        portfolio_sell_currency = get_portfolio(message.parent().id, message.author.name, sell_currency)
+
+        available_funds = 0
+        trade_cost = 0
+        quantity_bought = 0
+
+        if portfolio_sell_currency:
+            available_funds = float(portfolio_sell_currency[0]["amount"])
+
+        if quantity_is_percent:
+            trade_cost = (quantity_float / 100) * available_funds
+            quantity_bought = trade_cost / trading_price
+        else:
+            trade_cost = quantity_float * trading_price
+            quantity_bought = quantity_float
+
+        if args_invalid:
+            message.reply("Error processesing your request: Quantities must be greater than 0 and percentages cannot exceed 100%")
+        elif available_funds < trade_cost or available_funds == 0:
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply("Error processesing your request: You have insufficient funds to create that limit order! "
+                          "Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                            portfolio_summary = portfolio_summary
+                            ))
+        else:
+            create_limit_order(message.parent().id, message.author.name, quantity_bought, buy_currency, available_funds, trade_cost, sell_currency, trading_price)
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply("Limit order created! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                            portfolio_summary = portfolio_summary
+                            ))
+
+        return True
+    else:
+        message.reply("Could not parse limit order command. The correct syntax is:\n\n"
+                      "!Limit {quantity_to_buy | percentage_of_sell_currency} {symbol_to_buy} {symbol_to_sell} {limit_price}\n\n"
+                      "Examples:\n\n"
+                      "To buy 1000 XRP with USD when the price of 1 XRP reaches .9 USD:\n\n"
+                      "!Limit 1000 XRP USD .9\n\n"
+                      "To spend 50% of your available USD on XRP when the price of 1 XRP reaches .9 USD\n\n"
+                      "!Limit 50% XRP USD .9")
+        return True
+
+def process_cancel_limit_order(message):
+    """
+    :param message: the message containing the cancel limit order command
+    :return: True if success False if not
+    """
+    command_regex = r'^!cancellimit[ ]+(?P<limit_order_id>[\d]+)$'
+    match = re.search(command_regex, message.body, re.IGNORECASE)
+
+    if (match and match.group("limit_order_id")):
+        args_invalid = False
+        limit_order_id = int(match.group("limit_order_id"))
+
+        limit_order_cancelled = cancel_limit_order(limit_order_id, message.author.name)
+
+        if limit_order_cancelled:
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply(
+                "Limit order canceled! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                    portfolio_summary=portfolio_summary
+                ))
+        else:
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply("Could not cancel the limit order specified. "
+                          "If you are sure you are the owner of that limit order and it hasnt already been executed or canceled please try again later. "
+                          "Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                            portfolio_summary=portfolio_summary
+                            ))
+        return True
+
+
+    else:
+        message.reply("Could not parse cancel limit order command. The correct syntax is:\n\n"
+                      "!CancelLimit {limit_order_id}\n\n"
+                      "Example:\n\n"
+                      "To cancel the limit order with ID 77:\n\n"
+                      "!CancelLimit 77")
+        return True
 
 def get_trading_price(from_symbol, to_symbol, price_time):
     """
@@ -307,13 +423,10 @@ def get_trading_price(from_symbol, to_symbol, price_time):
     :return:
     """
     try:
-        api_url = ("https://min-api.cryptocompare.com/data/price?"
-                   "fsym={from_symbol}&"
-                   "tsyms={to_symbol}&"
-                   "extraParams=reddit_trading_game".format(
+        api_url = "https://min-api.cryptocompare.com/data/pricemulti?fsyms={from_symbol}&tsyms={to_symbol}".format(
             from_symbol = from_symbol,
             to_symbol = to_symbol
-        ))
+        )
 
         use_history_api = False
 
@@ -344,13 +457,13 @@ def get_trading_price(from_symbol, to_symbol, price_time):
 
             # If not success then retry up to 10 times after 1 sec wait
             if ((use_history_api and response.get("Response", "Error") != "Success") or
-                (not use_history_api and to_symbol not in response)):
+                (not use_history_api and from_symbol not in response)):
                 api_error_count += 1
                 logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
                                                                          error_count=api_error_count))
                 time.sleep(1)
                 if api_error_count >= 10 or (not use_history_api and response.get("Message", "Error") in "There is no data for any of the toSymbols"):
-                    send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                    send_dev_pm("API Error Getting Price", "Retry number {error_count} call {api_url}".format(api_url=api_url,
                                                                                    error_count=api_error_count))
                     return -1
             else:
@@ -360,8 +473,8 @@ def get_trading_price(from_symbol, to_symbol, price_time):
             for minute_data in response["Data"]:
                 if price_time - minute_data["time"] < 60:
                     return minute_data["close"]
-        elif not use_history_api and to_symbol in response:
-            return response[to_symbol]
+        elif not use_history_api and from_symbol in response:
+            return response[from_symbol][to_symbol]
         else:
             return -2
 
@@ -419,6 +532,73 @@ def execute_trade(submission_id, comment_id, username, buy_quantity, buy_currenc
     db_connection.connection.commit()
     db_connection.connection.close()
 
+def create_limit_order(submission_id, username, buy_quantity, buy_currency, available_funds, trade_cost, sell_currency, limit_price):
+    """
+    creates a limit order as an atomic function by moving currency from the portfolio to the limit_order table
+    :param submission_id: id of the game the request is for
+    :param comment_id: id of the comment that contains the request
+    :param username: user that requested the trade
+    :param buy_quantity: amount of buy_currency bought
+    :param buy_currency: the currency that was bought
+    :param available_funds: amount of sell_currency available for sale
+    :param trade_cost: amount of sell_currency it cost to buy the amount of buy_currency
+    :param sell_currency: the currency that was sold
+    :return: success or failure
+    """
+
+    db_connection = DbConnection()
+    query = "SELECT game_id FROM game_submission WHERE game_submission.submission_id = %s"
+    db_connection.cursor.execute(query, [submission_id])
+    game_id = db_connection.cursor.fetchall()[0]["game_id"]
+
+    #Update sell currency portfolio
+    query = ("UPDATE portfolio "
+             "SET amount = %s "
+             "WHERE game_id = %s AND owner = %s AND currency = %s")
+    db_connection.cursor.execute(query, [(available_funds - trade_cost), game_id, username, sell_currency])
+
+    #create limit order by inserting into table
+    query = ("INSERT INTO limit_order (game_id, owner, buy_currency, buy_amount, sell_currency, sell_amount, limit_price, executed, canceled) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)")
+    db_connection.cursor.execute(query, [game_id, username, buy_currency, buy_quantity, sell_currency, trade_cost, limit_price, 0, 0])
+
+    db_connection.connection.commit()
+    db_connection.connection.close()
+
+def cancel_limit_order(limit_order_id, username):
+    """
+    :param limit_order_id: id of limit order to cancel
+    :param username: username of requestor
+    :return: True if successful False otherwise
+    """
+
+    db_connection = DbConnection()
+    query = "SELECT * FROM limit_order WHERE limit_order_id = %s AND owner = %s AND executed = false AND canceled = false"
+    db_connection.cursor.execute(query, [limit_order_id, username])
+    limit_orders = db_connection.cursor.fetchall()
+
+    if limit_orders:
+        limit_order = limit_orders[0]
+        sell_currency = limit_order["sell_currency"]
+        sell_amount = limit_order["sell_amount"]
+        game_id = limit_order["game_id"]
+
+        # Update sell currency portfolio
+        query = ("UPDATE portfolio "
+                 "SET amount = amount + %s "
+                 "WHERE game_id = %s AND owner = %s AND currency = %s")
+        db_connection.cursor.execute(query, [sell_amount, game_id, username, sell_currency])
+
+        #cancel order in table
+        query = "UPDATE limit_order SET canceled = true WHERE limit_order_id = %s AND owner = %s"
+        db_connection.cursor.execute(query, [limit_order_id, username])
+
+        db_connection.connection.commit()
+        db_connection.connection.close()
+        return True
+    else:
+        return False
+
 def initialize_portfolio(submission_id, username):
     """
     If the portfolio is empty for the user in the given game then give them USD to start the game
@@ -439,6 +619,26 @@ def initialize_portfolio(submission_id, username):
 
         db_connection.connection.commit()
         db_connection.connection.close()
+
+def get_active_limit_orders(submission_id, username):
+    """
+    :param submission_id: The game the portfolio belongs to
+    :param username: username the portfolio belongs to
+    :param currency: None if you want everything or specify the currency you want info for
+    :return: If currency is None return the entire portfolio otherwise get only the currency specified
+    """
+
+    db_connection = DbConnection()
+    query = ("SELECT * FROM limit_order "
+             "JOIN game_submission ON game_submission.game_id = limit_order.game_id "
+             "WHERE game_submission.submission_id = %s AND limit_order.owner = %s AND "
+             "executed = false AND canceled = false "
+             "ORDER BY buy_currency ASC")
+    db_connection.cursor.execute(query, [submission_id, username])
+    limit_orders = db_connection.cursor.fetchall()
+    db_connection.connection.close()
+
+    return limit_orders
 
 def get_portfolio(submission_id, username, currency = None):
     """
@@ -497,31 +697,69 @@ def get_currencies(submission_id, username = None):
 
 def get_portfolio_summary(submission_id, username):
     portfolio = get_portfolio(submission_id, username)
+    limit_orders = get_active_limit_orders(submission_id, username)
+
+    portfolio_summary = ""
+
+    currencies = get_currencies(submission_id, username)
+    usd_value = get_currencies_usd_value(currencies)
+    total_usd_value = 0
 
     if portfolio:
-        header = ("Currency | Amount | Value (USD)\n"
+        portfolio_header = ("**Available Funds:**\n\n"
+                            "Currency | Amount | Value (USD)\n"
                   "---|---|----\n")
-        body = ""
+        portfolio_body = ""
 
-        currencies = get_currencies(submission_id, username)
-        usd_value = get_currencies_usd_value(currencies)
-        total_usd_value = 0
+        total_portfolio_usd_value = 0
 
         for portfolio_currency in portfolio:
             currency = portfolio_currency["currency"]
             amount = float(portfolio_currency["amount"])
             if currency in usd_value:
                 currency_value = amount * usd_value[currency]["USD"]
-                total_usd_value += currency_value
-                body += currency + "|" + '{:,.4f}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
-        footer = "**TOTAL**|**-----**|**" + '${:,.2f}'.format(total_usd_value) + "**\n"
+                total_portfolio_usd_value += currency_value
+                portfolio_body += currency + "|" + '{:,.4f}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
+        portfolio_footer = "**TOTAL**|**-----**|**" + '${:,.2f}'.format(total_portfolio_usd_value) + "**\n"
 
-        return header + body + footer
+        portfolio_summary += portfolio_header + portfolio_body + portfolio_footer
+        total_usd_value += total_portfolio_usd_value
     else:
         logger.error("Something might be wrong with {username}'s portfolio for game {submission_id}. "
                      "They have no portfolio for the given game!".format(username = username,
                                                                          submission_id = submission_id))
         return ""
+
+    if limit_orders:
+        limit_order_header = ("**Limit Orders:**\n\n"
+                              "Order ID | Buy Currency | Buy Quantity | Sell Currency | Sell Quantity | Limit Price | Value (USD)\n"
+                            "---|---|---|---|---|---|----\n")
+        limit_order_body = ""
+
+        total_limit_order_usd_value = 0
+
+        for limit_order_currency in limit_orders:
+            buy_currency = limit_order_currency["buy_currency"]
+            buy_quantity = limit_order_currency["buy_amount"]
+            limit_price = limit_order_currency["limit_price"]
+            currency = limit_order_currency["sell_currency"]
+            amount = float(limit_order_currency["sell_amount"])
+            order_id = limit_order_currency["limit_order_id"]
+            if currency in usd_value:
+                currency_value = amount * usd_value[currency]["USD"]
+                total_limit_order_usd_value += currency_value
+                limit_order_body += (str(order_id) + "|" + buy_currency + "|" + '{:,.4f}'.format(buy_quantity) + "|" +
+                                     currency + "|" + '{:,.4f}'.format(amount) + "|" + '{:,.6f}'.format(limit_price) + "|" + '${:,.2f}'.format(
+                    currency_value) + "\n")
+                limit_order_footer = "**TOTAL**|**-----**|**-----**|**-----**|**-----**|**-----**|**" + '${:,.2f}'.format(total_limit_order_usd_value) + "**\n"
+
+        portfolio_summary += "\n\n^^^^.\n\n " + limit_order_header + limit_order_body + limit_order_footer
+        total_usd_value += total_limit_order_usd_value
+
+        portfolio_summary += "\n\n^^^^.\n\n The total combined value of your portfolio and limit orders is: " \
+                             "**{total}**".format(total = '{:,.2f}'.format(total_usd_value))
+
+    return portfolio_summary
 
 def get_currencies_usd_value(currencies):
     """
@@ -565,7 +803,7 @@ def get_current_games():
     Retreive all active games from the DB
     :return: returns tuple of submission_ids for all active games
     """
-    current_datetime = datetime.today()
+    current_datetime = datetime.utcnow()
     db_connection = DbConnection()
     query = "SELECT submission_id FROM game_submission WHERE game_begin_datetime <= %s AND game_end_datetime >= %s ORDER BY game_begin_datetime"
     db_connection.cursor.execute(query,[current_datetime,current_datetime])

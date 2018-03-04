@@ -19,7 +19,7 @@ CREATE TABLE `portfolio` (
   `game_id` int(11) NOT NULL,
   `owner` varchar(50) NOT NULL,
   `currency` varchar(50) NOT NULL,
-  `amount` DECIMAL(18,9) NOT NULL,
+  `amount` DECIMAL(40,20) NOT NULL,
   `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`portfolio_id`)
@@ -47,10 +47,26 @@ CREATE TABLE `executed_trade` (
   `game_id` int(11) NOT NULL,
   `comment_id` varchar(50) NOT NULL,
   `buy_currency` varchar(50) NOT NULL,
-  `buy_amount` DECIMAL(18,9) NOT NULL,
+  `buy_amount` DECIMAL(40,20) NOT NULL,
   `sell_currency` varchar(50) NOT NULL,
-  `sell_amount` DECIMAL(18,9) NOT NULL,
+  `sell_amount` DECIMAL(40,20) NOT NULL,
   `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`executed_trade_id`)
+);
+
+CREATE TABLE `limit_order` (
+  `limit_order_id` int(11) NOT NULL AUTO_INCREMENT,
+  `game_id` int(11) NOT NULL,
+  `buy_currency` varchar(50) NOT NULL,
+  `buy_amount` DECIMAL(40,20) NOT NULL,
+  `sell_currency` varchar(50) NOT NULL,
+  `sell_amount` DECIMAL(40,20) NOT NULL,
+  `limit_price` DECIMAL(40,20) NOT NULL,
+  `owner` varchar(50) NOT NULL,
+  `executed` BIT(1) NOT NULL,
+  `canceled` BIT(1) NOT NULL,
+  `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`limit_order_id`)
 );
