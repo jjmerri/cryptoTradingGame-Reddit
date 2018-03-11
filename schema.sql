@@ -9,6 +9,7 @@ CREATE TABLE `game_submission` (
   `author` varchar(50) NOT NULL,
   `game_begin_datetime` DATETIME NOT NULL,
   `game_end_datetime` DATETIME NOT NULL,
+  `complete` BIT(1) NOT NULL,
   `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`game_id`)

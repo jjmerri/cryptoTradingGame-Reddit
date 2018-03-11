@@ -5,8 +5,10 @@
 # =============================================================================
 import traceback
 import praw
+import operator
 import re
 import MySQLdb
+import calendar
 import configparser
 import logging
 import time
@@ -221,12 +223,14 @@ def create_new_game(message):
             supported_commands = SUPPORTED_COMMANDS
         ))
 
-        cmd = "INSERT INTO game_submission (subreddit, submission_id, author, game_begin_datetime, game_end_datetime) VALUES (%s, %s, %s, %s, %s)"
+        cmd = ("INSERT INTO game_submission (subreddit, submission_id, author, game_begin_datetime, game_end_datetime, complete) " 
+               "VALUES (%s, %s, %s, %s, %s, %s)")
         db_connection.cursor.execute(cmd, (submission.subreddit.display_name,
                                            submission.id,
                                            submission.author.name,
                                            str(begin_datetime),
-                                           str(end_datetime)))
+                                           str(end_datetime),
+                                           "false"))
         db_connection.connection.commit()
         db_connection.connection.close()
 
@@ -666,6 +670,39 @@ def get_portfolio(submission_id, username, currency = None):
 
     return portfolio
 
+def get_all_portfolios(submission_id):
+    """
+    :param submission_id: The game the portfolio belongs to
+    :return: return portfolios for everyone playing the game with submission_id
+    """
+
+    db_connection = DbConnection()
+    query = ("SELECT * FROM portfolio "
+             "JOIN game_submission ON game_submission.game_id = portfolio.game_id "
+             "WHERE game_submission.submission_id = %s")
+    db_connection.cursor.execute(query, [submission_id])
+    portfolios = db_connection.cursor.fetchall()
+    db_connection.connection.close()
+
+    return portfolios
+
+def get_all_open_limit_orders(submission_id):
+    """
+    :param submission_id: The game the limit orders belongs to
+    :return: return open limit orders for everyone playing the game with submission_id
+    """
+
+    db_connection = DbConnection()
+    query = ("SELECT * FROM limit_order "
+             "JOIN game_submission ON game_submission.game_id = limit_order.game_id "
+             "WHERE game_submission.submission_id = %s AND limit_order.executed = false AND limit_order.canceled = false")
+    db_connection.cursor.execute(query, [submission_id])
+    limit_orders = db_connection.cursor.fetchall()
+    db_connection.connection.close()
+
+    return limit_orders
+
+
 def get_currencies(submission_id, username = None):
     """
     :param submission_id: The game the portfolio belongs to
@@ -702,7 +739,7 @@ def get_portfolio_summary(submission_id, username):
     portfolio_summary = ""
 
     currencies = get_currencies(submission_id, username)
-    usd_value = get_currencies_usd_value(currencies)
+    usd_value = get_currencies_current_usd_value(currencies)
     total_usd_value = 0
 
     if portfolio:
@@ -717,7 +754,7 @@ def get_portfolio_summary(submission_id, username):
             currency = portfolio_currency["currency"]
             amount = float(portfolio_currency["amount"])
             if currency in usd_value:
-                currency_value = amount * usd_value[currency]["USD"]
+                currency_value = amount * usd_value[currency]
                 total_portfolio_usd_value += currency_value
                 portfolio_body += currency + "|" + '{:,.4f}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
         portfolio_footer = "**TOTAL**|**-----**|**" + '${:,.2f}'.format(total_portfolio_usd_value) + "**\n"
@@ -746,7 +783,7 @@ def get_portfolio_summary(submission_id, username):
             amount = float(limit_order_currency["sell_amount"])
             order_id = limit_order_currency["limit_order_id"]
             if currency in usd_value:
-                currency_value = amount * usd_value[currency]["USD"]
+                currency_value = amount * usd_value[currency]
                 total_limit_order_usd_value += currency_value
                 limit_order_body += (str(order_id) + "|" + buy_currency + "|" + '{:,.4f}'.format(buy_quantity) + "|" +
                                      currency + "|" + '{:,.4f}'.format(amount) + "|" + '{:,.6f}'.format(limit_price) + "|" + '${:,.2f}'.format(
@@ -761,7 +798,7 @@ def get_portfolio_summary(submission_id, username):
 
     return portfolio_summary
 
-def get_currencies_usd_value(currencies):
+def get_currencies_current_usd_value(currencies):
     """
     :param currencies: the currencies to get the USD value for
     :return: dictionary containing currency USD values
@@ -793,20 +830,208 @@ def get_currencies_usd_value(currencies):
             else:
                 break
 
-        return response
+        prices = {}
+        for price in response:
+            prices[price] = response[price]["USD"]
+        return prices
     except Exception as err:
         logger.exception("Error getting usd values")
         return {}
 
+def get_currencies_historical_usd_value(currencies, price_time):
+    """
+    :param currencies: the currencies to get the USD value for
+    :param price_time: the point in time to get the price for
+    :return: dictionary containing currency USD values
+    """
+    try:
+        price_threads = []
+        historical_prices = {}
+
+        for currency in currencies:
+            if currency == "USD":
+                historical_prices["USD"] = 1
+            else:
+                # Thread api calls because they take a while in succession
+                t = Thread(target=get_currency_historical_usd_value, args=[currency, price_time, historical_prices])
+                price_threads.append(t)
+                t.start()
+
+        # Wait for all checks
+        for price_thread in price_threads:
+            price_thread.join()
+
+        return historical_prices
+
+    except Exception as err:
+        logger.exception("Error getting usd values")
+        return {}
+
+def get_currency_historical_usd_value(currency, price_time, historical_prices):
+    """
+    get the historical price for currency at price_time
+    :param currency: the currency to get the price for
+    :param price_time: the point in time to get the price for
+    :param historical_prices: the dictipnary to add prices to
+    """
+    api_url = ("https://min-api.cryptocompare.com/data/histominute?"
+               "fsym={from_symbol}&"
+               "tsym=USD&"
+               "toTs={price_time}&"
+               "e=CCCAGG&"
+               "limit=1&"
+               "extraParams=reddit_trading_game".format(
+        from_symbol = currency,
+        price_time = price_time
+    ))
+
+    response = {}
+    api_error_count = 0
+
+    # Loop to retry getting API data. Will break on success or 10 consecutive errors
+    while True:
+        r = requests.get(api_url)
+        response = r.json()
+
+        # If not success then retry up to 10 times after 1 sec wait
+        if response.get("Response", "Error") != "Success":
+            api_error_count += 1
+            logger.error("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                            error_count=api_error_count))
+            time.sleep(1)
+            if api_error_count >= 10:
+                send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                                                                               error_count=api_error_count))
+                break
+        else:
+            for minute_data in response["Data"]:
+                if (price_time - minute_data['time']) < 60:
+                    historical_prices[currency] = minute_data['close']
+            break
+
+def update_leader_board(submission_record):
+    """
+    Updates the leaderboard for the game with submission_id
+    :param submission_record: the reddit submission of the game to update
+    :param leader_board_time: the as of time to use for the price
+    :param game_over: True if the game is over and this is the final update
+    :return:
+    """
+    submission_id = submission_record["submission_id"]
+    submission = reddit.submission(id=submission_id)
+    current_datetime = time.time()
+    game_end_datetime = calendar.timegm(submission_record["game_end_datetime"].utctimetuple())
+    game_over = False
+    leader_board_time = current_datetime
+
+    if current_datetime >= game_end_datetime:
+        game_over = True
+        leader_board_time = game_end_datetime
+
+    leader_board_text = get_leader_board_text(submission_id, leader_board_time, game_over)
+    leader_board_text = "<leader_board>\n\n" + leader_board_text + "<\leader_board>"
+    regex = re.compile(r"<leader_board>.*<\\leader_board>", re.DOTALL)
+
+    updated_body = ""
+    if regex.search(submission.selftext):
+        updated_body = regex.sub(leader_board_text, submission.selftext)
+    else:
+        updated_body = submission.selftext + "\n\n" + leader_board_text
+
+    submission.edit(updated_body)
+
+def get_leader_board(submission_id, leader_board_time):
+    """
+    Gets the leader board for the submission with submission_id at the point in time specified by leader_board_time
+    :param submission_id: the id of the game to get the leader board for
+    :param leader_board_time: the point in time to get the leader board
+    :return: a dicttionary where the key is a username and the value is the value of the users portfolio
+    """
+    portfolio_values = {}
+
+    currencies = get_currencies(submission_id)
+    if currencies:
+        now_timestamp = time.time()
+
+        if (now_timestamp - leader_board_time) > 60:
+            currencies_usd_value = get_currencies_historical_usd_value(currencies, int(leader_board_time))
+        else:
+            currencies_usd_value = get_currencies_current_usd_value(currencies)
+
+        portfolios = get_all_portfolios(submission_id)
+        limit_orders = get_all_open_limit_orders(submission_id)
+
+        for portfolio in portfolios:
+            owner = portfolio["owner"]
+            currency = portfolio["currency"]
+            amount = portfolio["amount"]
+            portfolio_values[owner] = portfolio_values.get(owner, 0.0) + (currencies_usd_value[currency] * float(amount))
+
+        for limit_order in limit_orders:
+            owner = limit_order["owner"]
+            currency = limit_order["sell_currency"]
+            amount = limit_order["sell_amount"]
+            portfolio_values[owner] = portfolio_values.get(owner, 0.0) + (currencies_usd_value[currency] * float(amount))
+
+    return sorted(portfolio_values.items(), key=operator.itemgetter(0), reverse=True)
+
+def get_leader_board_text(submission_id, leader_board_time, game_over):
+    """
+    Gets the text for the leaderboard to be used in the games post
+    :param submission_id: the game to get the leader board for
+    :param currencies_usd_value: the values of all the cryptos being used in the game
+    :param game_over: true if the game has ended
+    :return: the text for the leaderboard to be used in the games post
+    """
+    leader_board = get_leader_board(submission_id, leader_board_time)
+
+    game_end_header = ""
+    if leader_board and game_over:
+        winner = leader_board[0][0]
+        game_end_header = "### GAME END FINAL STANDINGS: Congrats to the winner {winner}!!!\n\n".format(winner = winner)
+
+    leader_board_header = (game_end_header +
+                           "**Leader Board Updated at "
+                           "[{update_datetime} UTC](http://www.wolframalpha.com/input/?i={update_datetime} UTC To Local Time):**\n\n".format(
+                            update_datetime = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")) +
+                          "User | Value (USD)\n"
+                          "---|---\n")
+    leader_board_body = ""
+
+    num_bold_leaders = 3
+    num_leaders = 0
+    for portfolio_value in leader_board:
+        num_leaders += 1
+        if num_leaders <= num_bold_leaders:
+            username = "**" + portfolio_value[0] + "**"
+        else:
+            username = portfolio_value[0]
+
+        value = portfolio_value[1]
+        leader_board_body += username + "|" + '{:,.2f}'.format(value) + "\n"
+
+    return leader_board_header + leader_board_body
+
+def get_submission_record(submission_id):
+    """
+    Retreive game from the DB
+    :return: returns record from game_submission table
+    """
+    db_connection = DbConnection()
+    query = "SELECT * FROM game_submission WHERE submission_id = %s"
+    db_connection.cursor.execute(query,[submission_id])
+    submission_record = db_connection.cursor.fetchall()
+    db_connection.connection.close()
+
+    return submission_record
 def get_current_games():
     """
     Retreive all active games from the DB
     :return: returns tuple of submission_ids for all active games
     """
-    current_datetime = datetime.utcnow()
     db_connection = DbConnection()
-    query = "SELECT submission_id FROM game_submission WHERE game_begin_datetime <= %s AND game_end_datetime >= %s ORDER BY game_begin_datetime"
-    db_connection.cursor.execute(query,[current_datetime,current_datetime])
+    query = "SELECT * FROM game_submission WHERE complete = false"
+    db_connection.cursor.execute(query,[])
     current_games = db_connection.cursor.fetchall()
     db_connection.connection.close()
 
@@ -828,6 +1053,16 @@ def get_processed_comments(game_id):
     db_connection.connection.close()
 
     return processed_comments
+
+def update_leader_boards():
+    try:
+        current_games = get_current_games()
+        for current_game in current_games:
+            current_game_id = current_game["submission_id"]
+            submission_record = get_submission_record(current_game_id)[0]
+            update_leader_board(submission_record)
+    except Exception as err:
+        logger.exception("Unknown Exception in process_game_messages")
 
 def process_game_messages():
     try:
@@ -901,6 +1136,7 @@ def main():
         try:
             process_pms()
             process_game_messages()
+            update_leader_boards()
 
             logger.info("End Main Loop")
         except Exception as err:
