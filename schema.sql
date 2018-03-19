@@ -59,6 +59,7 @@ CREATE TABLE `executed_trade` (
 CREATE TABLE `limit_order` (
   `limit_order_id` int(11) NOT NULL AUTO_INCREMENT,
   `game_id` int(11) NOT NULL,
+  `comment_id` varchar(50) NOT NULL,
   `buy_currency` varchar(50) NOT NULL,
   `buy_amount` DECIMAL(40,20) NOT NULL,
   `sell_currency` varchar(50) NOT NULL,
@@ -70,4 +71,14 @@ CREATE TABLE `limit_order` (
   `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`limit_order_id`)
+);
+
+CREATE TABLE `standings` (
+  `standings_id` int(11) NOT NULL AUTO_INCREMENT,
+  `game_id` int(11) NOT NULL,
+  `owner` varchar(50) NOT NULL,
+  `portfolio_value` DECIMAL(40,20) NOT NULL,
+  `create_timestamp` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_timestamp` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`standings_id`)
 );

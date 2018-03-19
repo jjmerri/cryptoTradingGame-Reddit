@@ -111,13 +111,13 @@ class MessageRequest(object):
                 processed = True
             elif command == CommandType.MARKET_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
-                processed = process_market_order(self.message)
+                processed = process_market_order_command(self.message)
             elif command == CommandType.LIMIT_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
-                processed = process_limit_order(self.message)
+                processed = process_limit_order_command(self.message)
             elif command == CommandType.CANCEL_LIMIT_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
-                processed = process_cancel_limit_order(self.message)
+                processed = process_cancel_limit_order_command(self.message)
             elif command == CommandType.PORTFOLIO:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
                 portfolio_summary = get_portfolio_summary(self.message.parent().id, self.message.author.name)
@@ -216,7 +216,7 @@ def create_new_game(message):
         "The object of the game is to have the highest value portfolio before the game's end time "
         "[{end_datetime} UTC](http://www.wolframalpha.com/input/?i={end_datetime} UTC To Local Time). "
         "Everyone starts the game with $10,000 USD to trade as they wish. Current prices and standings will be updated here.\n\n"
-        "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG)."
+        "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG). "
         "The below commands are available to initiate trades and check on your portfolio.\n\n"
         "**Commands**\n\n{supported_commands}".format(
             end_datetime = end_datetime.strftime("%Y-%m-%d %H:%M:%S"),
@@ -230,7 +230,7 @@ def create_new_game(message):
                                            submission.author.name,
                                            str(begin_datetime),
                                            str(end_datetime),
-                                           "false"))
+                                           False))
         db_connection.connection.commit()
         db_connection.connection.close()
 
@@ -240,7 +240,7 @@ def create_new_game(message):
                       "!NewGame {game_length_integer} {day | days | month | months}")
         return False
 
-def process_market_order(message):
+def process_market_order_command(message):
     """
     :param message: the message containing the market order command
     :return: True if success False if not
@@ -296,11 +296,15 @@ def process_market_order(message):
                             portfolio_summary = portfolio_summary
                             ))
         else:
-            execute_trade(message.parent().id, message.id, message.author.name, quantity_bought, buy_currency, available_funds, trade_cost, sell_currency)
+            trade_executed = execute_trade(message.id, message.author.name, quantity_bought, buy_currency, trade_cost, sell_currency, False, submission_id = message.parent().id)
             portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
-            message.reply("Trade Executed! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+
+            if trade_executed:
+                message.reply("Trade Executed! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
                             portfolio_summary = portfolio_summary
                             ))
+            else:
+                logger.error("Error executing market order for comment_id: {message_id}".format(message_id = message.id))
 
         return True
     else:
@@ -314,7 +318,7 @@ def process_market_order(message):
         return True
 
 
-def process_limit_order(message):
+def process_limit_order_command(message):
     """
     :param message: the message containing the limit order command
     :return: True if success False if not
@@ -328,7 +332,7 @@ def process_limit_order(message):
         quantity_str = match.group("quantity")
         buy_currency = match.group("buy_currency").upper()
         sell_currency = match.group("sell_currency").upper()
-        trading_price = float(match.group("limit_price"))
+        limit_price = float(match.group("limit_price"))
 
         if "%" in quantity_str:
             quantity_str = quantity_str.replace("%","")
@@ -345,18 +349,37 @@ def process_limit_order(message):
         trade_cost = 0
         quantity_bought = 0
 
+        current_price = get_trading_price(buy_currency, sell_currency, message.created_utc)
+
         if portfolio_sell_currency:
             available_funds = float(portfolio_sell_currency[0]["amount"])
 
         if quantity_is_percent:
             trade_cost = (quantity_float / 100) * available_funds
-            quantity_bought = trade_cost / trading_price
+            quantity_bought = trade_cost / limit_price
         else:
-            trade_cost = quantity_float * trading_price
+            trade_cost = quantity_float * limit_price
             quantity_bought = quantity_float
 
         if args_invalid:
             message.reply("Error processesing your request: Quantities must be greater than 0 and percentages cannot exceed 100%")
+        elif current_price < limit_price:
+            message.reply(
+                "**Error:** Limit order not created! "
+                "The price you specified for the limit order is higher than the current price of {current_price}. "
+                "It would have been cheaper to make a market order.\n\n"
+                "You tried to issue a command to buy {buy_currency} with {sell_currency} when 1 {buy_currency} became worth {limit_price} {sell_currency}. "
+                "If you meant to issue a command to buy {buy_currency} with {sell_currency} "
+                "when 1 {sell_currency} became worth {limit_price} {buy_currency} you can use the following command:\n\n"
+                "**!limit {quantity_str} {buy_currency} {sell_currency} {inverted_ratio}**\n\n"
+                "If you want to make a purchase at the market price use the !Market command.".format(
+                    current_price = str(current_price),
+                    buy_currency = buy_currency,
+                    sell_currency = sell_currency,
+                    limit_price = str(limit_price),
+                    quantity_str = quantity_str + ("%" if quantity_is_percent else ""),
+                    inverted_ratio = '{:,.6g}'.format(1/limit_price)
+                ))
         elif available_funds < trade_cost or available_funds == 0:
             portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
             message.reply("Error processesing your request: You have insufficient funds to create that limit order! "
@@ -364,7 +387,7 @@ def process_limit_order(message):
                             portfolio_summary = portfolio_summary
                             ))
         else:
-            create_limit_order(message.parent().id, message.author.name, quantity_bought, buy_currency, available_funds, trade_cost, sell_currency, trading_price)
+            create_limit_order(message.parent().id, message.id, message.author.name, quantity_bought, buy_currency, available_funds, trade_cost, sell_currency, limit_price)
             portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
             message.reply("Limit order created! Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
                             portfolio_summary = portfolio_summary
@@ -381,7 +404,7 @@ def process_limit_order(message):
                       "!Limit 50% XRP USD .9")
         return True
 
-def process_cancel_limit_order(message):
+def process_cancel_limit_order_command(message):
     """
     :param message: the message containing the cancel limit order command
     :return: True if success False if not
@@ -488,7 +511,35 @@ def get_trading_price(from_symbol, to_symbol, price_time):
         trading_price = -4
         logger.exception("Unknown Exception getting the trading price")
 
-def execute_trade(submission_id, comment_id, username, buy_quantity, buy_currency, available_funds, trade_cost, sell_currency):
+def get_game_id(submission_id):
+    """
+    Returns the game_id associated with submission_id
+    :param submission_id: the submission_id of the game
+    :return: Returns the game_id associated with submission_id
+    """
+    db_connection = DbConnection()
+    query = "SELECT game_id FROM game_submission WHERE game_submission.submission_id = %s"
+    db_connection.cursor.execute(query, [submission_id])
+    game_id = db_connection.cursor.fetchall()[0]["game_id"]
+    db_connection.connection.close()
+
+    return game_id
+
+def get_submission_id(game_id):
+    """
+    Returns the game_id associated with submission_id
+    :param submission_id: the submission_id of the game
+    :return: Returns the game_id associated with submission_id
+    """
+    db_connection = DbConnection()
+    query = "SELECT submission_id FROM game_submission WHERE game_submission.game_id = %s"
+    db_connection.cursor.execute(query, [game_id])
+    submission_id = db_connection.cursor.fetchall()[0]["submission_id"]
+    db_connection.connection.close()
+
+    return submission_id
+
+def execute_trade(comment_id, username, buy_quantity, buy_currency, trade_cost, sell_currency, is_limit_order, submission_id = None, game_id = None):
     """
     Executes the trade as an atomic function by updating the portfolio and adding the trade to the executed_trade table
     :param submission_id: id of the game the request is for
@@ -496,22 +547,40 @@ def execute_trade(submission_id, comment_id, username, buy_quantity, buy_currenc
     :param username: user that requested the trade
     :param buy_quantity: amount of buy_currency bought
     :param buy_currency: the currency that was bought
-    :param available_funds: amount of sell_currency available for sale
     :param trade_cost: amount of sell_currency it cost to buy the amount of buy_currency
     :param sell_currency: the currency that was sold
     :return: success or failure
     """
+    if submission_id is None and game_id is None:
+        logger.error("execute_trade did not provide submission_id or game_id! Cannot execute trade.")
+        return False
+    elif game_id is None:
+        game_id = get_game_id(submission_id)
+    elif submission_id is None:
+        submission_id = get_submission_id(game_id)
+
+    available_funds = 0
+    portfolio_sell_currency = get_portfolio(submission_id, username, sell_currency)
+    if portfolio_sell_currency:
+        available_funds = float(portfolio_sell_currency[0]["amount"])
+    else:
+        return False
+
+    #If it is a limit order the funds were already subtracted from the portfolio so add the funds back to make the trade
+    if is_limit_order:
+        available_funds += float(trade_cost)
+
+    if available_funds < trade_cost:
+        logger.error("Insufficient funds to complete trade with comment_id: {comment_id)".format(comment_id=comment_id))
+        return False
 
     db_connection = DbConnection()
-    query = "SELECT game_id FROM game_submission WHERE game_submission.submission_id = %s"
-    db_connection.cursor.execute(query, [submission_id])
-    game_id = db_connection.cursor.fetchall()[0]["game_id"]
 
     #Update sell currency portfolio
     query = ("UPDATE portfolio "
              "SET amount = %s "
              "WHERE game_id = %s AND owner = %s AND currency = %s")
-    db_connection.cursor.execute(query, [(available_funds - trade_cost), game_id, username, sell_currency])
+    db_connection.cursor.execute(query, [(available_funds - float(trade_cost)), game_id, username, sell_currency])
 
     #Update buy currency portolfio or add it if it doesnt exist
     query = ("SELECT portfolio_id FROM portfolio "
@@ -536,7 +605,9 @@ def execute_trade(submission_id, comment_id, username, buy_quantity, buy_currenc
     db_connection.connection.commit()
     db_connection.connection.close()
 
-def create_limit_order(submission_id, username, buy_quantity, buy_currency, available_funds, trade_cost, sell_currency, limit_price):
+    return True
+
+def create_limit_order(submission_id, comment_id, username, buy_quantity, buy_currency, available_funds, trade_cost, sell_currency, limit_price):
     """
     creates a limit order as an atomic function by moving currency from the portfolio to the limit_order table
     :param submission_id: id of the game the request is for
@@ -562,9 +633,9 @@ def create_limit_order(submission_id, username, buy_quantity, buy_currency, avai
     db_connection.cursor.execute(query, [(available_funds - trade_cost), game_id, username, sell_currency])
 
     #create limit order by inserting into table
-    query = ("INSERT INTO limit_order (game_id, owner, buy_currency, buy_amount, sell_currency, sell_amount, limit_price, executed, canceled) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)")
-    db_connection.cursor.execute(query, [game_id, username, buy_currency, buy_quantity, sell_currency, trade_cost, limit_price, 0, 0])
+    query = ("INSERT INTO limit_order (game_id, comment_id, owner, buy_currency, buy_amount, sell_currency, sell_amount, limit_price, executed, canceled) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
+    db_connection.cursor.execute(query, [game_id, comment_id, username, buy_currency, buy_quantity, sell_currency, trade_cost, limit_price, False, False])
 
     db_connection.connection.commit()
     db_connection.connection.close()
@@ -624,7 +695,7 @@ def initialize_portfolio(submission_id, username):
         db_connection.connection.commit()
         db_connection.connection.close()
 
-def get_active_limit_orders(submission_id, username):
+def get_users_open_limit_orders(submission_id, username):
     """
     :param submission_id: The game the portfolio belongs to
     :param username: username the portfolio belongs to
@@ -734,7 +805,7 @@ def get_currencies(submission_id, username = None):
 
 def get_portfolio_summary(submission_id, username):
     portfolio = get_portfolio(submission_id, username)
-    limit_orders = get_active_limit_orders(submission_id, username)
+    limit_orders = get_users_open_limit_orders(submission_id, username)
 
     portfolio_summary = ""
 
@@ -756,7 +827,7 @@ def get_portfolio_summary(submission_id, username):
             if currency in usd_value:
                 currency_value = amount * usd_value[currency]
                 total_portfolio_usd_value += currency_value
-                portfolio_body += currency + "|" + '{:,.4f}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
+                portfolio_body += currency + "|" + '{:,.6g}'.format(amount) + "|" + '${:,.2f}'.format(currency_value) + "\n"
         portfolio_footer = "**TOTAL**|**-----**|**" + '${:,.2f}'.format(total_portfolio_usd_value) + "**\n"
 
         portfolio_summary += portfolio_header + portfolio_body + portfolio_footer
@@ -785,8 +856,8 @@ def get_portfolio_summary(submission_id, username):
             if currency in usd_value:
                 currency_value = amount * usd_value[currency]
                 total_limit_order_usd_value += currency_value
-                limit_order_body += (str(order_id) + "|" + buy_currency + "|" + '{:,.4f}'.format(buy_quantity) + "|" +
-                                     currency + "|" + '{:,.4f}'.format(amount) + "|" + '{:,.6f}'.format(limit_price) + "|" + '${:,.2f}'.format(
+                limit_order_body += (str(order_id) + "|" + buy_currency + "|" + '{:,.6g}'.format(buy_quantity) + "|" +
+                                     currency + "|" + '{:,.6g}'.format(amount) + "|" + '{:,.6g}'.format(limit_price) + "|" + '${:,.2f}'.format(
                     currency_value) + "\n")
                 limit_order_footer = "**TOTAL**|**-----**|**-----**|**-----**|**-----**|**-----**|**" + '${:,.2f}'.format(total_limit_order_usd_value) + "**\n"
 
@@ -940,6 +1011,18 @@ def update_leader_board(submission_record):
 
     submission.edit(updated_body)
 
+def close_game(submission_id):
+    """
+    closes out the game with the submission_id
+    :param submission_id: the id of the game to close
+    """
+
+    db_connection = DbConnection()
+    query = "UPDATE game_submission SET complete = true WHERE submission_id = %s"
+    db_connection.cursor.execute(query,[submission_id])
+    db_connection.connection.commit()
+    db_connection.connection.close()
+
 def get_leader_board(submission_id, leader_board_time):
     """
     Gets the leader board for the submission with submission_id at the point in time specified by leader_board_time
@@ -985,6 +1068,8 @@ def get_leader_board_text(submission_id, leader_board_time, game_over):
     """
     leader_board = get_leader_board(submission_id, leader_board_time)
 
+    update_leader_board_table(submission_id, leader_board)
+
     game_end_header = ""
     if leader_board and game_over:
         winner = leader_board[0][0]
@@ -1011,6 +1096,39 @@ def get_leader_board_text(submission_id, leader_board_time, game_over):
         leader_board_body += username + "|" + '{:,.2f}'.format(value) + "\n"
 
     return leader_board_header + leader_board_body
+
+def update_leader_board_table(submission_id, leader_board):
+    """
+    Updates the leader board for the game
+    :param submission_id: id fot the game to update the leader board for
+    :param leader_board: the leader board to save
+    """
+    if leader_board:
+        db_connection = DbConnection()
+        query = "SELECT game_id FROM game_submission WHERE game_submission.submission_id = %s"
+        db_connection.cursor.execute(query, [submission_id])
+        game_id = db_connection.cursor.fetchall()[0]["game_id"]
+
+        query = ("DELETE standings FROM standings "
+                "WHERE game_id = %s")
+        db_connection.cursor.execute(query, [game_id])
+
+        values_sql = ""
+        sql_args = []
+
+        for leader in leader_board:
+            values_sql += "(%s, %s, %s),"
+            sql_args.append(game_id)
+            sql_args.append(leader[0])
+            sql_args.append(leader[1])
+
+        values_sql = values_sql[:-1]
+
+        query = ("INSERT INTO standings (game_id, owner, portfolio_value) VALUES {values}".format(values=values_sql))
+        db_connection.cursor.execute(query, sql_args)
+
+        db_connection.connection.commit()
+        db_connection.connection.close()
 
 def get_submission_record(submission_id):
     """
@@ -1058,11 +1176,113 @@ def update_leader_boards():
     try:
         current_games = get_current_games()
         for current_game in current_games:
-            current_game_id = current_game["submission_id"]
-            submission_record = get_submission_record(current_game_id)[0]
-            update_leader_board(submission_record)
+            update_leader_board(current_game)
     except Exception as err:
-        logger.exception("Unknown Exception in process_game_messages")
+        logger.exception("Unknown Exception in update_leader_boards")
+
+def process_limit_order(limit_order):
+    """
+    Checks if the limit_order needs to be processed and does so if needed
+    :param limit_order: the limit_order to process
+    """
+    limit_order_id = limit_order["limit_order_id"]
+    buy_currency = limit_order["buy_currency"]
+    sell_currency = limit_order["sell_currency"]
+    limit_price = limit_order["limit_price"]
+    comment_id = limit_order["comment_id"]
+    current_time =  time.time()
+
+    current_price = get_trading_price(buy_currency, sell_currency, current_time)
+
+    if current_price <= limit_price:
+        message = reddit.comment(comment_id)
+        limit_order_executed = execute_limit_order(limit_order)
+
+        if limit_order_executed:
+            portfolio_summary = get_portfolio_summary(message.parent().id, message.author.name)
+            message.reply("Limit order executed! "
+                          "Here is the current state of your portfolio:\n\n{portfolio_summary}".format(
+                portfolio_summary=portfolio_summary
+            ))
+        else:
+            send_dev_pm("Error Executing Limit Order", "Could not execute limit_order with id: {limit_order_id}".format(
+                limit_order_id=limit_order_id
+            ))
+
+def execute_limit_orders():
+    """
+    checks if limit orders should be processed and processes them if so
+    """
+    try:
+        current_games = get_current_games()
+        limit_order_threads = []
+        for current_game in current_games:
+            current_game_id = current_game["submission_id"]
+            limit_orders = get_all_open_limit_orders(current_game_id)
+            for limit_order in limit_orders:
+                # Thread api calls because they take a while in succession
+                t = Thread(target=process_limit_order,
+                           args=[limit_order])
+                limit_order_threads.append(t)
+                t.start()
+
+        # Wait for all limit_orders
+        for price_thread in limit_order_threads:
+            price_thread.join()
+
+    except Exception as err:
+        logger.exception("Unknown Exception in execute_limit_orders")
+
+
+
+def close_games():
+    """
+    closes games if they are past the end date
+    """
+    try:
+        current_games = get_current_games()
+        for current_game in current_games:
+            current_datetime = time.time()
+            game_end_datetime = calendar.timegm(current_game["game_end_datetime"].utctimetuple())
+
+            if current_datetime >= game_end_datetime:
+                close_game(current_game["submission_id"])
+
+
+    except Exception as err:
+        logger.exception("Unknown Exception in close_games")
+
+def execute_limit_order(limit_order):
+    """
+    Executes the limit order by making closing the limit order and adding the appropriate funds to the owners portfolio
+    :param limit_order: The limit order table row to execute
+    :return:
+    """
+    limit_order_id = limit_order["limit_order_id"]
+    game_id = limit_order["game_id"]
+    owner = limit_order["owner"]
+    buy_amount = limit_order["buy_amount"]
+    sell_amount = limit_order["sell_amount"]
+    buy_currency = limit_order["buy_currency"]
+    sell_currency = limit_order["sell_currency"]
+    comment_id = limit_order["comment_id"]
+
+
+    db_connection = DbConnection()
+    query = "UPDATE limit_order SET executed = true WHERE limit_order_id = %s"
+    db_connection.cursor.execute(query, [limit_order_id])
+
+    trade_executed = execute_trade(comment_id, owner, buy_amount, buy_currency,
+                  sell_amount, sell_currency, True, game_id = game_id)
+    if trade_executed:
+        db_connection.connection.commit()
+    else:
+        logger.error("Could not execute trade")
+        db_connection.connection.rollback()
+
+    db_connection.connection.close()
+
+    return trade_executed
 
 def process_game_messages():
     try:
@@ -1137,6 +1357,8 @@ def main():
             process_pms()
             process_game_messages()
             update_leader_boards()
+            execute_limit_orders()
+            close_games()
 
             logger.info("End Main Loop")
         except Exception as err:
