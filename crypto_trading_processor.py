@@ -46,10 +46,14 @@ DB_PASS = config.get("SQL", "passwd")
 
 ENVIRONMENT = config.get("CRYPTOTRADING", "environment")
 
+CRYPTO_GAME_SUBREDDIT = "CryptoTradingGame"
+
+if ENVIRONMENT == "DEV":
+    CRYPTO_GAME_SUBREDDIT = "CryptoDayTradingGame"
+
 DEV_USER_NAME = config.get("CRYPTOTRADING", "dev_user")
 
 RUNNING_FILE = "crypto_trading_processor.running"
-CRYPTO_GAME_SUBREDDIT = "CryptoDayTradingGame"
 SUPPORTED_COMMANDS = ("!Market {buy_amount} {buy_symbol} {sell_symbol}\n\n"
                       "!Limit {buy_amount} {buy_symbol} {sell_symbol} {limit_price}\n\n"
                       "!CancelLimit {order_id}\n\n"
@@ -215,7 +219,7 @@ def create_new_game(message):
         "Welcome to The Crypto Day Trading Game! "
         "The object of the game is to have the highest value portfolio before the game's end time "
         "[{end_datetime} UTC](http://www.wolframalpha.com/input/?i={end_datetime} UTC To Local Time). "
-        "Everyone starts the game with $10,000 USD to trade as they wish. Current prices and standings will be updated here.\n\n"
+        "Everyone starts the game with $10,000 USD to trade as they wish. Standings will be updated here.\n\n"
         "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG). "
         "The below commands are available to initiate trades and check on your portfolio.\n\n"
         "**Commands**\n\n{supported_commands}".format(
