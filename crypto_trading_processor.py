@@ -47,9 +47,9 @@ DB_PASS = config.get("SQL", "passwd")
 ENVIRONMENT = config.get("CRYPTOTRADING", "environment")
 
 CRYPTO_GAME_SUBREDDIT = "CryptoTradingGame"
-
 if ENVIRONMENT == "DEV":
     CRYPTO_GAME_SUBREDDIT = "CryptoDayTradingGame"
+
 
 DEV_USER_NAME = config.get("CRYPTOTRADING", "dev_user")
 
@@ -57,8 +57,9 @@ RUNNING_FILE = "crypto_trading_processor.running"
 SUPPORTED_COMMANDS = ("!Market {buy_amount} {buy_symbol} {sell_symbol}\n\n"
                       "!Limit {buy_amount} {buy_symbol} {sell_symbol} {limit_price}\n\n"
                       "!CancelLimit {order_id}\n\n"
-                      "!Portfolio\n\n"
-                      "See the [README](https://github.com/jjmerri/cryptoTradingGame-Reddit) for more info on commands.")
+                      "!Portfolio\n\n")
+
+common_currencies = ["ADA","BCH","BCN","BTC","BTG","BTS","DASH","ETC","ETH","LSK","LTC","MIOTA","NANO","NEO","QTUM","SC","STEEM","STRAT","WAVES","XEM","XLM","XMR","XRP","XVG","ZEC"]
 
 FORMAT = '%(asctime)-15s %(message)s'
 logging.basicConfig(format=FORMAT)
@@ -212,37 +213,50 @@ def create_new_game(message):
         else:
             end_datetime = begin_datetime + relativedelta(months=+game_length)
 
-        submission = reddit.subreddit(CRYPTO_GAME_SUBREDDIT).submit("Crypto Trading Game: {start_datetime} - {end_datetime}".format(
-            start_datetime = begin_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            end_datetime = end_datetime.strftime("%Y-%m-%d %H:%M:%S")
-        ),
-        "Welcome to The Crypto Day Trading Game! "
-        "The object of the game is to have the highest value portfolio before the game's end time "
-        "[{end_datetime} UTC](http://www.wolframalpha.com/input/?i={end_datetime} UTC To Local Time). "
-        "Everyone starts the game with $10,000 USD to trade as they wish. Standings will be updated here.\n\n"
-        "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG). "
-        "The below commands are available to initiate trades and check on your portfolio.\n\n"
-        "**Commands**\n\n{supported_commands}".format(
-            end_datetime = end_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            supported_commands = SUPPORTED_COMMANDS
-        ))
-
-        cmd = ("INSERT INTO game_submission (subreddit, submission_id, author, game_begin_datetime, game_end_datetime, complete) " 
-               "VALUES (%s, %s, %s, %s, %s, %s)")
-        db_connection.cursor.execute(cmd, (submission.subreddit.display_name,
-                                           submission.id,
-                                           submission.author.name,
-                                           str(begin_datetime),
-                                           str(end_datetime),
-                                           False))
-        db_connection.connection.commit()
-        db_connection.connection.close()
+        create_new_game(begin_datetime, end_datetime)
 
         return True
     else:
         message.reply("Could not parse new game command. The correct syntax is:\n\n"
                       "!NewGame {game_length_integer} {day | days | month | months}")
         return False
+
+def create_new_game(begin_datetime, end_datetime):
+    submission = reddit.subreddit(CRYPTO_GAME_SUBREDDIT).submit(
+        "Crypto Trading Game: {start_datetime} - {end_datetime}".format(
+            start_datetime=begin_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M:%S")
+        ),
+        "Welcome to The Crypto Day Trading Game! "
+        "The object of the game is to have the highest value portfolio before the game's end time "
+        "[{end_datetime} UTC](http://www.wolframalpha.com/input/?i={end_datetime} UTC To Local Time). "
+        "Everyone starts the game with $10,000 USD to trade as they wish. Standings will be updated here.\n\n"
+        "All price data is gathered from the CryptoCompare API using the CryptoCompare Current Aggregate (CCCAG). "
+        "The below commands are available to initiate trades and check on your portfolio. "
+        "For more detailed info on commands reference the [wiki](https://www.reddit.com/r/CryptoTradingGame/wiki/index)\n\n"
+        "**Commands**\n\n{supported_commands}".format(
+            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            supported_commands=SUPPORTED_COMMANDS
+        ))
+
+    choices = submission.flair.choices()
+    template_id = next(x for x in choices
+                       if x['flair_text'] == 'In Progress')['flair_template_id']
+    submission.flair.select(template_id)
+
+
+    db_connection = DbConnection()
+    cmd = (
+    "INSERT INTO game_submission (subreddit, submission_id, author, game_begin_datetime, game_end_datetime, complete) "
+    "VALUES (%s, %s, %s, %s, %s, %s)")
+    db_connection.cursor.execute(cmd, (submission.subreddit.display_name,
+                                       submission.id,
+                                       submission.author.name,
+                                       str(begin_datetime),
+                                       str(end_datetime),
+                                       False))
+    db_connection.connection.commit()
+    db_connection.connection.close()
 
 def process_market_order_command(message):
     """
@@ -1020,12 +1034,37 @@ def close_game(submission_id):
     closes out the game with the submission_id
     :param submission_id: the id of the game to close
     """
+    winner = get_leader(submission_id);
+
+    submission = reddit.submission(id = submission_id)
+    choices = submission.flair.choices()
+    template_id = next(x for x in choices
+                       if x['flair_text_editable'])['flair_template_id']
+    submission.flair.select(template_id, "Winner: {winner}".format(winner=winner))
 
     db_connection = DbConnection()
     query = "UPDATE game_submission SET complete = true WHERE submission_id = %s"
     db_connection.cursor.execute(query,[submission_id])
     db_connection.connection.commit()
     db_connection.connection.close()
+
+def get_leader(submission_id):
+    """
+    returns the user id of the user currently in the lead
+    :param submission_id: submission_id to get the winner for
+    :return: the user id of the user currently in the lead
+    """
+    db_connection = DbConnection()
+    query = ("SELECT owner FROM standings "
+             "JOIN game_submission ON game_submission.game_id = standings.game_id "
+             "WHERE game_submission.submission_id = %s "
+             "ORDER BY portfolio_value DESC "
+             "LIMIT 1")
+    db_connection.cursor.execute(query,[submission_id])
+    winner = db_connection.cursor.fetchall()[0]["owner"]
+    db_connection.connection.close()
+
+    return winner
 
 def get_leader_board(submission_id, leader_board_time):
     """
@@ -1060,7 +1099,7 @@ def get_leader_board(submission_id, leader_board_time):
             amount = limit_order["sell_amount"]
             portfolio_values[owner] = portfolio_values.get(owner, 0.0) + (currencies_usd_value[currency] * float(amount))
 
-    return sorted(portfolio_values.items(), key=operator.itemgetter(0), reverse=True)
+    return sorted(portfolio_values.items(), key=operator.itemgetter(1), reverse=True)
 
 def get_leader_board_text(submission_id, leader_board_time, game_over):
     """
@@ -1160,17 +1199,17 @@ def get_current_games():
     return current_games
 
 
-def get_processed_comments(game_id):
+def get_processed_comments(submission_id):
     """
     Retreive all comments that have been already processed for the given game_id
-    :param game_id: submission id for the game you want to retreive processed comments for
+    :param submission_id: submission id for the game you want to retreive processed comments for
     :return: returns a tuple of comment ids that have been processed for the given game_id
     """
     db_connection = DbConnection()
     query = ("SELECT comment_id FROM processed_comment "
              "JOIN game_submission ON game_submission.game_id = processed_comment.game_id "
              "WHERE game_submission.submission_id = %s")
-    db_connection.cursor.execute(query,[game_id])
+    db_connection.cursor.execute(query,[submission_id])
     processed_comments = db_connection.cursor.fetchall()
     db_connection.connection.close()
 
@@ -1183,6 +1222,61 @@ def update_leader_boards():
             update_leader_board(current_game)
     except Exception as err:
         logger.exception("Unknown Exception in update_leader_boards")
+
+def update_games_current_prices():
+    try:
+        all_currencies = []
+        current_games = get_current_games()
+
+        for current_game in current_games:
+            currencies = get_currencies(current_game["submission_id"])
+            all_currencies.extend(currencies)
+
+        all_currencies.extend(common_currencies)
+        currencies_usd_value = get_currencies_current_usd_value(all_currencies)
+
+        for current_game in current_games:
+            update_current_prices(current_game["submission_id"], currencies_usd_value)
+
+    except Exception as err:
+        logger.exception("Unknown Exception in update_leader_boards")
+
+def update_current_prices(submission_id, currencies_usd_value):
+    submission = reddit.submission(id=submission_id)
+
+    table_text = get_currencies_table_text(currencies_usd_value)
+    table_text = "<currency_prices>\n\n" + table_text + "<\currency_prices>"
+    regex = re.compile(r"<currency_prices>.*<\\currency_prices>", re.DOTALL)
+
+    updated_body = ""
+    if regex.search(submission.selftext):
+        updated_body = regex.sub(table_text, submission.selftext)
+    else:
+        updated_body = submission.selftext + "\n\n" + table_text
+
+    submission.edit(updated_body)
+
+def get_currencies_table_text(currencies_usd_value):
+    """
+    returns a formated table of currencies USD value
+    :param currencies_usd_value: the currencies and values to e tableized
+    :return: a formated table of currencies USD value
+    """
+    table_header = ("**Current Prices Updated at "
+                    "[{update_datetime} UTC](http://www.wolframalpha.com/input/?i={update_datetime} UTC To Local Time):**\n\n".format(
+                        update_datetime=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")) +
+                    "The game is not limited to these currencies, they are just common.\n\n"
+                    "Currency | Value (USD)\n"
+                    "---|----\n")
+    table_body = ""
+
+    for currency in sorted(currencies_usd_value.items(), key=operator.itemgetter(0), reverse=False):
+        ticker = currency[0]
+        currency_value = currencies_usd_value[ticker]
+        table_body += ticker + "|" + '${:,.6g}'.format(currency_value) + "\n"
+
+
+    return table_header + table_body
 
 def process_limit_order(limit_order):
     """
@@ -1256,6 +1350,32 @@ def close_games():
     except Exception as err:
         logger.exception("Unknown Exception in close_games")
 
+
+def create_new_games():
+    """
+    looks for placeholder posts and replaces them with new games.
+    This is done so the schedule can be kept by automoderator scheduling and not this script
+    """
+    try:
+        for submission in reddit.subreddit(CRYPTO_GAME_SUBREDDIT).new():
+            if "[Placeholder]" in submission.title:
+                begin_datetime = datetime.utcfromtimestamp(submission.created_utc)
+                end_datetime = None
+
+                if "Daily Game" in submission.title:
+                    end_datetime = begin_datetime + relativedelta(days=+1)
+                elif "Weekly Game" in submission.title:
+                    end_datetime = begin_datetime + relativedelta(days=+7)
+                elif "Monthly Game" in submission.title:
+                    end_datetime = begin_datetime + relativedelta(months=+1)
+
+                create_new_game(begin_datetime, end_datetime)
+
+                submission.mod.remove()
+    except Exception as err:
+        logger.exception("Unknown Exception in create_new_games")
+
+
 def execute_limit_order(limit_order):
     """
     Executes the limit order by making closing the limit order and adding the appropriate funds to the owners portfolio
@@ -1292,20 +1412,20 @@ def process_game_messages():
     try:
         current_games = get_current_games()
         for current_game in current_games:
-            current_game_id = current_game["submission_id"]
-            unprocessed_comments = get_unprocessed_comments(current_game_id)
+            submission_id = current_game["submission_id"]
+            unprocessed_comments = get_unprocessed_comments(submission_id)
             for unprocessed_comment in unprocessed_comments:
                 message_request = MessageRequest(unprocessed_comment)
                 message_request.process()
     except Exception as err:
         logger.exception("Unknown Exception in process_game_messages")
 
-def get_unprocessed_comments(game_id):
-    submission = reddit.submission(id = game_id)
+def get_unprocessed_comments(submission_id):
+    submission = reddit.submission(id = submission_id)
     submission.comment_sort = 'old'
     top_level_comments = list(submission.comments)
 
-    processed_comments = get_processed_comments(game_id)
+    processed_comments = get_processed_comments(submission_id)
     unprocessed_comments = []
 
     for top_level_comment in top_level_comments:
@@ -1358,8 +1478,10 @@ def main():
     while start_process and os.path.isfile(RUNNING_FILE):
         logger.info("Start Main Loop")
         try:
+            create_new_games()
             process_pms()
             process_game_messages()
+            update_games_current_prices()
             update_leader_boards()
             execute_limit_orders()
             close_games()
