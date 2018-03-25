@@ -112,7 +112,7 @@ class MessageRequest(object):
             command = self._get_command()
 
             if command == CommandType.NEW_GAME and self.message.author.name == DEV_USER_NAME:
-                create_new_game(self.message)
+                create_new_custom_game(self.message)
                 processed = True
             elif command == CommandType.MARKET_ORDER:
                 initialize_portfolio(self.message.parent().id, self.message.author.name)
@@ -193,13 +193,13 @@ def send_dev_pm(subject, body):
     """
     reddit.redditor(DEV_USER_NAME).message(subject, body)
 
-def create_new_game(message):
+def create_new_custom_game(message):
     """
     :param message: the message containing the new_game command
     :return: True if success False if not
     """
     game_length_modes = ["DAY","DAYS","MONTH","MONTHS"]
-    command_regex = r'!newgame[ ]+(?P<game_length>[\d]+)[ ]+(?P<game_length_mode>[a-zA-Z]+)'
+    command_regex = r'!newgame[ ]+(?P<game_length>[\d]+)[ ]+(?P<game_length_mode>[a-zA-Z]+)([ ]+(?P<title_description>.+))?'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
     if (match and match.group("game_length") and match.group("game_length_mode")
@@ -207,13 +207,14 @@ def create_new_game(message):
         db_connection = DbConnection()
         game_length = int(match.group("game_length"))
         game_length_mode = match.group("game_length_mode").upper()
+        title_description = match.group("title_description")
         begin_datetime = datetime.utcnow()
         if "DAY" in game_length_mode:
             end_datetime = begin_datetime + relativedelta(days=+game_length)
         else:
             end_datetime = begin_datetime + relativedelta(months=+game_length)
 
-        create_new_game(begin_datetime, end_datetime)
+        create_new_game(begin_datetime, end_datetime, title_description)
 
         return True
     else:
@@ -221,11 +222,12 @@ def create_new_game(message):
                       "!NewGame {game_length_integer} {day | days | month | months}")
         return False
 
-def create_new_game(begin_datetime, end_datetime):
+def create_new_game(begin_datetime, end_datetime, title_description = ""):
     submission = reddit.subreddit(CRYPTO_GAME_SUBREDDIT).submit(
-        "Crypto Trading Game: {start_datetime} - {end_datetime}".format(
-            start_datetime=begin_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M:%S")
+        "Crypto Trading Game - {title_description}: {start_datetime} - {end_datetime}".format(
+            start_datetime=begin_datetime.strftime("%Y-%m-%d %H:%M"),
+            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M"),
+            title_description = title_description
         ),
         "Welcome to The Crypto Day Trading Game! "
         "The object of the game is to have the highest value portfolio before the game's end time "
@@ -235,7 +237,7 @@ def create_new_game(begin_datetime, end_datetime):
         "The below commands are available to initiate trades and check on your portfolio. "
         "For more detailed info on commands reference the [wiki](https://www.reddit.com/r/CryptoTradingGame/wiki/index)\n\n"
         "**Commands**\n\n{supported_commands}".format(
-            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M"),
             supported_commands=SUPPORTED_COMMANDS
         ))
 
@@ -1361,15 +1363,19 @@ def create_new_games():
             if "[Placeholder]" in submission.title:
                 begin_datetime = datetime.utcfromtimestamp(submission.created_utc)
                 end_datetime = None
+                title_description = None
 
                 if "Daily Game" in submission.title:
                     end_datetime = begin_datetime + relativedelta(days=+1)
+                    title_description = "Daily"
                 elif "Weekly Game" in submission.title:
                     end_datetime = begin_datetime + relativedelta(days=+7)
+                    title_description = "Weekly"
                 elif "Monthly Game" in submission.title:
                     end_datetime = begin_datetime + relativedelta(months=+1)
+                    title_description = "Monthly"
 
-                create_new_game(begin_datetime, end_datetime)
+                create_new_game(begin_datetime, end_datetime, title_description)
 
                 submission.mod.remove()
     except Exception as err:
