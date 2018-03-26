@@ -265,7 +265,7 @@ def process_market_order_command(message):
     :param message: the message containing the market order command
     :return: True if success False if not
     """
-    command_regex = r'^!market[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)$'
+    command_regex = r'!market[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
     if (match and match.group("quantity") and match.group("buy_currency") and match.group("sell_currency")):
@@ -343,7 +343,7 @@ def process_limit_order_command(message):
     :param message: the message containing the limit order command
     :return: True if success False if not
     """
-    command_regex = r'^!limit[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)[ ]+(?P<limit_price>(([\d]+)?(\.\d+)?))$'
+    command_regex = r'!limit[ ]+\$?(?P<quantity>(([\d]+)?(\.\d+)?%?))[ ]+(?P<buy_currency>[0-9a-zA-Z]+)[ ]+(?P<sell_currency>[0-9a-zA-Z]+)[ ]+(?P<limit_price>(([\d]+)?(\.\d+)?))'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
     if (match and match.group("quantity") and match.group("buy_currency") and match.group("sell_currency") and match.group("limit_price")):
@@ -429,7 +429,7 @@ def process_cancel_limit_order_command(message):
     :param message: the message containing the cancel limit order command
     :return: True if success False if not
     """
-    command_regex = r'^!cancellimit[ ]+(?P<limit_order_id>[\d]+)$'
+    command_regex = r'!cancellimit[ ]+(?P<limit_order_id>[\d]+)'
     match = re.search(command_regex, message.body, re.IGNORECASE)
 
     if (match and match.group("limit_order_id")):
