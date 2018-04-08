@@ -43,12 +43,14 @@ reddit = praw.Reddit(client_id=client_id,
 
 DB_USER = config.get("SQL", "user")
 DB_PASS = config.get("SQL", "passwd")
+DB_HOST = config.get("SQL", "host")
+DB_DATABASE = config.get("SQL", "database")
 
 ENVIRONMENT = config.get("CRYPTOTRADING", "environment")
 
-CRYPTO_GAME_SUBREDDIT = "CryptoTradingGame"
+CRYPTO_GAME_SUBREDDIT = config.get("CRYPTOTRADING", "subreddit")
 if ENVIRONMENT == "DEV":
-    CRYPTO_GAME_SUBREDDIT = "CryptoDayTradingGame"
+    CRYPTO_GAME_SUBREDDIT = config.get("CRYPTOTRADING", "dev_subreddit")
 
 
 DEV_USER_NAME = config.get("CRYPTOTRADING", "dev_user")
@@ -91,7 +93,7 @@ class DbConnection(object):
 
     def __init__(self):
         self.connection = MySQLdb.connect(
-            host="localhost", user=DB_USER, passwd=DB_PASS, db="crypto_trading_game"
+            host=DB_HOST, user=DB_USER, passwd=DB_PASS, db=DB_DATABASE
         )
         self.cursor = self.connection.cursor(MySQLdb.cursors.DictCursor)
 
