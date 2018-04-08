@@ -3,7 +3,7 @@
 
 ## User Guide
 
-####What is the Crypto Trading Game
+#### What is the Crypto Trading Game
 
 The Crypto Trading Game is simulated cryptocurrency trading using real market prices. Each game has its own Reddit post in /r/CryptoDayTradingGame and is given a duration.
 
