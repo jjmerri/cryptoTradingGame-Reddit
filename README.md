@@ -73,7 +73,7 @@ This file contains the database schema. It is to be run only on database initial
 
 ### Database
 
-A MySql database with the following objects:
+A MySQL database with the following objects:
 
 * game_submission - Stores info about a game submisson such as submission_id (Reddit ID) and game start/end time
 * porfolio - Stores users' available currency amounts
@@ -81,3 +81,18 @@ A MySql database with the following objects:
 * limit_order - Stores all limit orders and has in indicators to tell whether or not they have been canceled or executed.
 * executed_trade - Stores all executed trades for auditability and troubleshooting. Not used for any processing.
 * standings - Stores game standings. This is not used in processing and only exists for future functionality such as special flair for winners.
+
+## Running crypto_trading_processor.py
+
+Once you have your config file setup and python packages installed crypto_trading_processor.py should run without issue. Here are the high level steps you need to complete to fill out the config file.
+
+* Create a Reddit account for the bot
+* Create a Reddit script app under the bot account to get your app ID and secret
+* Install and run a MySQL instance
+* run schema.sql to create a database and tables
+* Create a MySQL ID and grant SELECT, INSERT, UPDATE, and DELETE permissions to it in the new database
+* Create a new subreddit where the bot will interact with users
+* Make the Reddit bot ID a mod
+* Create submission flair with the text 'In Progress'
+* Create a submission flair that is editable
+* Make sure your config file is named crypto_trading.cfg
