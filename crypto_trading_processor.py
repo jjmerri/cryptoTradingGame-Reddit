@@ -917,7 +917,7 @@ def get_currencies_current_usd_value(currencies):
                                                                          error_count=api_error_count))
                 time.sleep(1)
                 if api_error_count >= 10:
-                    send_dev_pm("Retry number {error_count} call {api_url}".format(api_url=api_url,
+                    send_dev_pm("Error calling CryptoCompare API", "Retry number {error_count} call {api_url}".format(api_url=api_url,
                                                                                    error_count=api_error_count))
                     return {}
             else:
@@ -1064,8 +1064,10 @@ def get_leader(submission_id):
              "WHERE game_submission.submission_id = %s "
              "ORDER BY portfolio_value DESC "
              "LIMIT 1")
-    db_connection.cursor.execute(query,[submission_id])
-    winner = db_connection.cursor.fetchall()[0]["owner"]
+    rowcount = db_connection.cursor.execute(query,[submission_id])
+    winner = "None"
+    if rowcount > 0:
+        winner = db_connection.cursor.fetchall()[0]["owner"]
     db_connection.connection.close()
 
     return winner
