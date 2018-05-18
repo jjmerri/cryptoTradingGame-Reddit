@@ -19,4 +19,9 @@ then
     (echo "Trading Processor LOG"; tail -40 $log_file;) | mail -t jjmerri88@gmail.com -s "Crypto Trading Bot Not Running!"
 fi
 
+if [ "$kill_ret" -eq "0" ] && [ -f $mail_sent_file ]
+then
+    rm $mail_sent_file
+fi
+
 exit 0
